@@ -1,0 +1,7 @@
+use_gpu: True
+batch_size: 16
+
+data_fbp5500:
+ dir: /home/yxy/cv_hw/project/datasets/FBP5500/faces
+
+res_dir: /home/yxy/cv_hw/project/results
