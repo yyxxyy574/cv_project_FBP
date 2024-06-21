@@ -9,11 +9,16 @@ from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from PIL import Image
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.model_targets import RawScoresOutputTarget
+from pytorch_grad_cam.utils.image import show_cam_on_image
 
 from config.constants import data_fbp5500, batch_size, res_dir
 from data import FBP5500
 from model.fbp import FBP
 from loss.crloss import CRLoss
+from utils import load_image
 
 def load_data(dataset_name, mode, person=None):
     transform = None
@@ -40,13 +45,50 @@ def load_data(dataset_name, mode, person=None):
       
     dataset = None  
     if dataset_name == "fbp5500":
-        df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"{mode}.xlsx"), sheet_name=mode)
         if person is not None:
+            df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"{mode}_maml.xlsx"), sheet_name=mode)
             df = df[df['user'] == person]
+        else:
+            df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"{mode}.xlsx"), sheet_name=mode)
         dataset = FBP5500(names=df['filename'].tolist(), scores=df['score'], transform=transform)
     
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, num_workers=50)
     return dataloader
+
+def explain(model, dataset_name, save_name, person=None):
+    if not os.path.exists(os.path.join(res_dir, save_name)):
+        os.makedirs(os.path.join(res_dir, save_name))
+    
+    target_layer = [model.backbone.avgpool]
+    
+    image_dir = None
+    if dataset_name == "fbp5500":
+        image_dir = os.path.join(data_fbp5500['dir'], "faces")
+    
+    df = None
+    if person is not None:
+        df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"train_maml.xlsx"), sheet_name="train")
+        df = df[df['user'] == person]
+    else:
+        df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"train.xlsx"), sheet_name="train")
+    
+    for filename in data_fbp5500['visualize_images']:
+        # 获取被解释图像数据的tensor和array形式
+        input_tensor, input_array = load_image(os.path.join(image_dir, f"{filename}.jpg"))
+        input_tensor = input_tensor.unsqueeze(dim=0)
+
+        # 构建GradCAM模型
+        cam = GradCAM(model=model, target_layers=target_layer)
+            
+        target = [RawScoresOutputTarget()]
+        
+        # 获得热力图
+        grayscale_cam = cam(input_tensor=input_tensor, targets=target)
+        
+        # 在原图上绘制热力图并保存
+        grayscale_cam = grayscale_cam[0, :]
+        visualization = Image.fromarray(show_cam_on_image(input_array, grayscale_cam, use_rgb=True))
+        visualization.save(os.path.join(res_dir, save_name, f"{filename}_gradcam.png"))
  
 def test(model, test_dataloader, log=None):
     model.eval()
@@ -73,14 +115,16 @@ def test(model, test_dataloader, log=None):
     print('===============The Pearson Correlation is {0}===================='.format(pc))
     
     if log is not None:
-        with pd.ExcelWriter(os.path.join(res_dir, f"{log}.xlsx"), engine='openpyxl') as writer:
+        if not os.path.exists(os.path.join(res_dir, log)):
+            os.makedirs(os.path.join(res_dir, log))
+        with pd.ExcelWriter(os.path.join(res_dir, log, "pred_results.xlsx"), engine='openpyxl') as writer:
             col = ['filename', 'gt', 'pred']
             df = pd.DataFrame([[image_name_list[i], gt_score_list[i], pred_score_list[i][0]] for i in range(len(image_name_list))],
                             columns=col)
             df.to_excel(writer, sheet_name='result_one', index=False)
             df = pd.DataFrame({"criteria": ["MAE", "RMSE", "PC"], "value": [mae, rmse, pc]})
             df.to_excel(writer, sheet_name="result_all", index=False)
-        print(f"Saved results in {log}.xlsx")
+        print(f"Saved results in {res_dir}/{log}/results.xlsx")
         
     return mae
     
@@ -117,17 +161,19 @@ def train(model, train_dataloader, val_dataloader, num_epochs=25, save_name="mod
         mean_loss_train = sum(loss_list) / len(loss_list)
         wandb.log({"train loss": sum(loss_list) / len(loss_list)})
         print(f"Train loss: {mean_loss_train:.4f}")
-        mae_val = test(model, val_dataloader, "test")
+        mae_val = test(model, val_dataloader)
         wandb.log({"val mae": mae_val})
         
+        if not os.path.exists(os.path.join(res_dir, "models")):
+            os.makedirs(os.path.join(res_dir, "models"))
         if not recorded_mae:
             min_mae = mae_val
             recorded_mae = True
-            torch.save(model.state_dict(), os.path.join(res_dir, f"{save_name}.pt"))
+            torch.save(model.state_dict(), os.path.join(res_dir, "models", f"{save_name}.pt"))
             print("Saved model.")
         elif mae_val < min_mae:
             min_mae = mae_val
-            torch.save(model.state_dict(), os.path.join(res_dir, f"{save_name}.pt"))
+            torch.save(model.state_dict(), os.path.join(res_dir, "models", f"{save_name}.pt"))
             print(f"Updated best model at epoch {epoch}.")
         
         scheduler.step()
@@ -147,7 +193,7 @@ if __name__ == "__main__":
     
     model = FBP()
     if options.load_from:
-        model.load_state_dict(torch.load(os.path.join(res_dir, f"{options.load_from}.pt")))
+        model.load_state_dict(torch.load(os.path.join(res_dir, "models", f"{options.load_from}.pt")))
     model = model.float()
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
@@ -162,7 +208,8 @@ if __name__ == "__main__":
         train_dataloader = load_data(options.dataset, mode="train", person=person)
         val_dataloader = load_data(options.dataset, mode="test", person=person)
         train(model, train_dataloader, val_dataloader, save_name=options.save_name)
+        explain(model, options.dataset, save_name=options.save_name, person=options.person)
         
     if options.test:
         test_dataloader = load_data(options.dataset, mode="test", person=person)
-        test(model, test_dataloader, save_name=options.save_name)
+        test(model, test_dataloader, log=options.save_name)
