@@ -16,7 +16,7 @@ class FBP5500(Dataset):
         return len(self.names)
     
     def __getitem__(self, index):
-        image = io.imread(os.path.join(data_fbp5500['dir'], self.names[index]))
+        image = io.imread(os.path.join(data_fbp5500['dir'], "faces", self.names[index]))
         score = self.scores[index]
         sample = {"image": image, "score": score, "class": round(score) - 1, "filename": self.names[index]}
         

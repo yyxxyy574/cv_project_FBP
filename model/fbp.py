@@ -4,8 +4,8 @@ from torchvision import models
 import sys
 sys.path.append("../")
 from utils import num_flat_features
-from regressor import Regressor
-from classifier import Classifier
+from .regressor import Regressor
+from .classifier import Classifier
 
 class FBP(nn.Module):
     def __init__(self):
