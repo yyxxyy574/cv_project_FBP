@@ -9,7 +9,7 @@ from config.constants import data_fbp5500
 class FBP5500(Dataset):
     def __init__(self, names, scores, transform=None):
         self.names = names
-        self.scores = scores.tolist()
+        self.scores = scores
         self.transform = transform
         
     def __len__(self):

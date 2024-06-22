@@ -1,8 +1,11 @@
 import argparse
 import os
 import pandas as pd
+import imageio
 import wandb
 import numpy as np
+import cv2
+import scipy
 import torch
 import torch.optim as optim
 from torch.optim import lr_scheduler
@@ -11,12 +14,12 @@ from torchvision import transforms
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from PIL import Image
 from pytorch_grad_cam import GradCAM
-from pytorch_grad_cam.utils.model_targets import RawScoresOutputTarget
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from pytorch_grad_cam.utils.image import show_cam_on_image
 
 from config.constants import data_fbp5500, batch_size, res_dir
 from data import FBP5500
-from model.fbp import FBP
+from model.fbp import FBP, FBC
 from loss.crloss import CRLoss
 from utils import load_image
 
@@ -50,45 +53,81 @@ def load_data(dataset_name, mode, person=None):
             df = df[df['user'] == person]
         else:
             df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"{mode}.xlsx"), sheet_name=mode)
-        dataset = FBP5500(names=df['filename'].tolist(), scores=df['score'], transform=transform)
+        dataset = FBP5500(names=df['filename'].tolist(), scores=df['score'].tolist(), transform=transform)
     
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, num_workers=50)
     return dataloader
 
 def explain(model, dataset_name, save_name, person=None):
+    model.eval()
     if not os.path.exists(os.path.join(res_dir, save_name)):
         os.makedirs(os.path.join(res_dir, save_name))
-    
-    target_layer = [model.backbone.avgpool]
-    
+        
     image_dir = None
     if dataset_name == "fbp5500":
         image_dir = os.path.join(data_fbp5500['dir'], "faces")
-    
-    df = None
-    if person is not None:
-        df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"train_maml.xlsx"), sheet_name="train")
-        df = df[df['user'] == person]
-    else:
-        df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"train.xlsx"), sheet_name="train")
-    
+
     for filename in data_fbp5500['visualize_images']:
         # 获取被解释图像数据的tensor和array形式
         input_tensor, input_array = load_image(os.path.join(image_dir, f"{filename}.jpg"))
         input_tensor = input_tensor.unsqueeze(dim=0)
+        input_tensor = input_tensor.to(device)
+        
+        for name, module in model.named_children():
+            if name == 'backbone':
+                for name_backbone, module_backbone in module.named_children():
+                    if name_backbone != 'avgpool':
+                        input_tensor = module_backbone(input_tensor)
+                    else:
+                        matrix = np.transpose(input_tensor[0, :, :, :].data.cpu().numpy(), [1, 2, 0])
+                        matrix = np.mean(matrix, axis=2).reshape([matrix.shape[0], matrix.shape[0], 1])
+                        matrix = cv2.resize(matrix, (224, 224))
+                        
+                        distance = np.zeros([224, 224, 3])
+                        for i in range(3):
+                            distance[:, :, i] = 0.2 * input_array[:, :, i] + 0.8 * matrix
+                    
+                        imageio.imwrite(os.path.join(res_dir, save_name, f"{filename}_gradcam.jpg"), distance.astype(np.uint8))
+                        break
 
-        # 构建GradCAM模型
-        cam = GradCAM(model=model, target_layers=target_layer)
+# def explain(model, dataset_name, save_name, person=None):
+#     model.eval()
+    
+#     if not os.path.exists(os.path.join(res_dir, save_name)):
+#         os.makedirs(os.path.join(res_dir, save_name))
+    
+#     target_layer = [model.backbone.avgpool]
+    
+#     image_dir = None
+#     if dataset_name == "fbp5500":
+#         image_dir = os.path.join(data_fbp5500['dir'], "faces")
+    
+#     df = None
+#     if person is not None:
+#         df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"train_maml.xlsx"), sheet_name="train")
+#         df = df[df['user'] == person]
+#     else:
+#         df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"train.xlsx"), sheet_name="train")
+    
+#     for filename in data_fbp5500['visualize_images']:
+#         # 获取被解释图像数据的tensor和array形式
+#         input_tensor, input_array = load_image(os.path.join(image_dir, f"{filename}.jpg"))
+#         input_tensor = input_tensor.unsqueeze(dim=0)
+
+#         # 构建GradCAM模型
+#         model_c = FBC(model.backbone, model.classifier)
+#         cam = GradCAM(model=model_c, target_layers=target_layer)
             
-        target = [RawScoresOutputTarget()]
+#         img_idx = round(df[df['filename'] == f'{filename}.jpg']['score'].tolist()[0]) - 1
+#         target = [ClassifierOutputTarget(img_idx)]
         
-        # 获得热力图
-        grayscale_cam = cam(input_tensor=input_tensor, targets=target)
+#         # 获得热力图
+#         grayscale_cam = cam(input_tensor=input_tensor, targets=target)
         
-        # 在原图上绘制热力图并保存
-        grayscale_cam = grayscale_cam[0, :]
-        visualization = Image.fromarray(show_cam_on_image(input_array, grayscale_cam, use_rgb=True))
-        visualization.save(os.path.join(res_dir, save_name, f"{filename}_gradcam.png"))
+#         # 在原图上绘制热力图并保存
+#         grayscale_cam = grayscale_cam[0, :]
+#         visualization = Image.fromarray(show_cam_on_image(input_array, grayscale_cam, use_rgb=True))
+#         visualization.save(os.path.join(res_dir, save_name, f"{filename}_gradcam.png"))
  
 def test(model, test_dataloader, log=None):
     model.eval()
@@ -183,6 +222,7 @@ if __name__ == "__main__":
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--train", action="store_true")
     group.add_argument("--test", action="store_true")
+    group.add_argument("--explain", action="store_true")
     group.add_argument("--maml", action="store_true")
     group.add_argument("--person", metavar="name", type=int, action="store", default=0)
     parser.add_argument("--dataset", metavar="file", action="store", default="fbp5500")
@@ -208,8 +248,10 @@ if __name__ == "__main__":
         train_dataloader = load_data(options.dataset, mode="train", person=person)
         val_dataloader = load_data(options.dataset, mode="test", person=person)
         train(model, train_dataloader, val_dataloader, save_name=options.save_name)
-        explain(model, options.dataset, save_name=options.save_name, person=options.person)
         
     if options.test:
         test_dataloader = load_data(options.dataset, mode="test", person=person)
         test(model, test_dataloader, log=options.save_name)
+        
+    if options.explain:
+        explain(model, options.dataset, save_name=options.save_name, person=options.person)
