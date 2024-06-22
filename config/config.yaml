@@ -3,5 +3,6 @@ batch_size: 16
 
 data_fbp5500:
  dir: /home/yxy/cv_hw/project/datasets/FBP5500
+ visualize_images: [ftw1, ftw118, fty13, fty14, mtw17, mtw21, mty762, mty1010]
 
 res_dir: /home/yxy/cv_hw/project/cv_project_FBP/results
