@@ -12,6 +12,7 @@ from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import train_test_split
 from PIL import Image
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
@@ -57,6 +58,39 @@ def load_data(dataset_name, mode, person=None):
     
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, num_workers=50)
     return dataloader
+
+def load_and_split_data(dataset_name, person=None):
+    mode = "train"
+    train_transform = transforms.Compose([
+        transforms.Resize(224),
+        transforms.RandomRotation(30),
+        transforms.ColorJitter(),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                                std=[1, 1, 1])
+    ])
+    val_transform = transforms.Compose([
+        transforms.Resize(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                                std=[1, 1, 1])
+    ])
+      
+    train_dataset = None  
+    val_dataset = None
+    if dataset_name == "fbp5500":
+        if person is not None:
+            df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"{mode}_maml.xlsx"), sheet_name=mode)
+            df = df[df['user'] == person]
+        else:
+            df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"{mode}.xlsx"), sheet_name=mode)
+        X_train, X_val, y_train, y_val = train_test_split(df['filename'].tolist(), df['score'].tolist(), test_size=0.15, random_state=0)
+        train_dataset = FBP5500(X_train, y_train, transform=train_transform)
+        val_dataset = FBP5500(X_val, y_val, transform=val_transform)
+    
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=50)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=50)
+    return train_dataloader, val_dataloader
 
 def explain(model, dataset_name, save_name, person=None):
     model.eval()
@@ -167,8 +201,8 @@ def test(model, test_dataloader, log=None):
         
     return mae
     
-def train(model, train_dataloader, val_dataloader, num_epochs=25, save_name="model"):
-    cirterion = CRLoss()
+def train(model, train_dataloader, val_dataloader, num_epochs=25, save_name="model", weight_classifier=0.4, weight_regressor=0.6):
+    cirterion = CRLoss(weight_classifier, weight_regressor)
     optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
     scheduler = lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
     min_mae = 0
@@ -223,11 +257,13 @@ if __name__ == "__main__":
     group.add_argument("--train", action="store_true")
     group.add_argument("--test", action="store_true")
     group.add_argument("--explain", action="store_true")
-    group.add_argument("--maml", action="store_true")
-    group.add_argument("--person", metavar="name", type=int, action="store", default=0)
+    parser.add_argument("--maml", action="store_true")
+    parser.add_argument("--person", metavar="name", type=int, action="store", default=0)
     parser.add_argument("--dataset", metavar="file", action="store", default="fbp5500")
     parser.add_argument("--save-name", metavar="file", action="store", default="model")
     parser.add_argument("--load-from", metavar="file", action="store", default=None)
+    parser.add_argument("--weight-classifier", metavar="value", type=float, action="store", default=0.4)
+    parser.add_argument("--weight-regressor", metavar="value", type=float, action="store", default=0.6)
 
     options = parser.parse_args()
     
@@ -245,13 +281,16 @@ if __name__ == "__main__":
     
     if options.train:
         wandb.init(project="cv_project_fbp", entity="yyxxyy574", name=options.save_name)
-        train_dataloader = load_data(options.dataset, mode="train", person=person)
-        val_dataloader = load_data(options.dataset, mode="test", person=person)
-        train(model, train_dataloader, val_dataloader, save_name=options.save_name)
+        if options.maml:
+            train_dataloader, val_dataloader = load_and_split_data(options.dataset, person=person)
+        else:
+            train_dataloader = load_data(options.dataset, mode="train", person=person)
+            val_dataloader = load_data(options.dataset, mode="test", person=person)
+        train(model, train_dataloader, val_dataloader, save_name=options.save_name, weight_classifier=options.weight_classifier, weight_regressor=options.weight_regressor)
         
     if options.test:
         test_dataloader = load_data(options.dataset, mode="test", person=person)
         test(model, test_dataloader, log=options.save_name)
         
     if options.explain:
-        explain(model, options.dataset, save_name=options.save_name, person=options.person)
+        explain(model, options.dataset, save_name=options.save_name, person=person)
