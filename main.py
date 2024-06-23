@@ -92,76 +92,76 @@ def load_and_split_data(dataset_name, person=None):
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=50)
     return train_dataloader, val_dataloader
 
-def explain(model, dataset_name, save_name, person=None):
-    model.eval()
-    if not os.path.exists(os.path.join(res_dir, save_name)):
-        os.makedirs(os.path.join(res_dir, save_name))
-        
-    image_dir = None
-    if dataset_name == "fbp5500":
-        image_dir = os.path.join(data_fbp5500['dir'], "faces")
-
-    for filename in data_fbp5500['visualize_images']:
-        # 获取被解释图像数据的tensor和array形式
-        input_tensor, input_array = load_image(os.path.join(image_dir, f"{filename}.jpg"))
-        input_tensor = input_tensor.unsqueeze(dim=0)
-        input_tensor = input_tensor.to(device)
-        
-        for name, module in model.named_children():
-            if name == 'backbone':
-                for name_backbone, module_backbone in module.named_children():
-                    if name_backbone != 'avgpool':
-                        input_tensor = module_backbone(input_tensor)
-                    else:
-                        matrix = np.transpose(input_tensor[0, :, :, :].data.cpu().numpy(), [1, 2, 0])
-                        matrix = np.mean(matrix, axis=2).reshape([matrix.shape[0], matrix.shape[0], 1])
-                        matrix = cv2.resize(matrix, (224, 224))
-                        
-                        distance = np.zeros([224, 224, 3])
-                        for i in range(3):
-                            distance[:, :, i] = 0.2 * input_array[:, :, i] + 0.8 * matrix
-                    
-                        imageio.imwrite(os.path.join(res_dir, save_name, f"{filename}_gradcam.jpg"), distance.astype(np.uint8))
-                        break
-
 # def explain(model, dataset_name, save_name, person=None):
 #     model.eval()
-    
 #     if not os.path.exists(os.path.join(res_dir, save_name)):
 #         os.makedirs(os.path.join(res_dir, save_name))
-    
-#     target_layer = [model.backbone.avgpool]
-    
+        
 #     image_dir = None
 #     if dataset_name == "fbp5500":
 #         image_dir = os.path.join(data_fbp5500['dir'], "faces")
-    
-#     df = None
-#     if person is not None:
-#         df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"train_maml.xlsx"), sheet_name="train")
-#         df = df[df['user'] == person]
-#     else:
-#         df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"train.xlsx"), sheet_name="train")
-    
+
 #     for filename in data_fbp5500['visualize_images']:
 #         # 获取被解释图像数据的tensor和array形式
 #         input_tensor, input_array = load_image(os.path.join(image_dir, f"{filename}.jpg"))
 #         input_tensor = input_tensor.unsqueeze(dim=0)
+#         input_tensor = input_tensor.to(device)
+        
+#         for name, module in model.named_children():
+#             if name == 'backbone':
+#                 for name_backbone, module_backbone in module.named_children():
+#                     if name_backbone != 'avgpool':
+#                         input_tensor = module_backbone(input_tensor)
+#                     else:
+#                         matrix = np.transpose(input_tensor[0, :, :, :].data.cpu().numpy(), [1, 2, 0])
+#                         matrix = np.mean(matrix, axis=2).reshape([matrix.shape[0], matrix.shape[0], 1])
+#                         matrix = cv2.resize(matrix, (224, 224))
+                        
+#                         distance = np.zeros([224, 224, 3])
+#                         for i in range(3):
+#                             distance[:, :, i] = 0.2 * input_array[:, :, i] + 0.8 * matrix
+                    
+#                         imageio.imwrite(os.path.join(res_dir, save_name, f"{filename}_gradcam.jpg"), (distance * 255).astype(np.uint8))
+#                         break
 
-#         # 构建GradCAM模型
-#         model_c = FBC(model.backbone, model.classifier)
-#         cam = GradCAM(model=model_c, target_layers=target_layer)
+def explain(model, dataset_name, save_name, person=None):
+    model.eval()
+    
+    if not os.path.exists(os.path.join(res_dir, save_name)):
+        os.makedirs(os.path.join(res_dir, save_name))
+    
+    target_layer = [model.backbone.layer4[1].bn2]
+    
+    image_dir = None
+    if dataset_name == "fbp5500":
+        image_dir = os.path.join(data_fbp5500['dir'], "faces")
+    
+    df = None
+    if person is not None:
+        df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"train_maml.xlsx"), sheet_name="train")
+        df = df[df['user'] == person]
+    else:
+        df = pd.read_excel(os.path.join(data_fbp5500['dir'], f"train.xlsx"), sheet_name="train")
+    
+    for filename in data_fbp5500['visualize_images']:
+        # 获取被解释图像数据的tensor和array形式
+        input_tensor, input_array = load_image(os.path.join(image_dir, f"{filename}.jpg"))
+        input_tensor = input_tensor.unsqueeze(dim=0)
+
+        # 构建GradCAM模型
+        model_c = FBC(model.backbone, model.classifier)
+        cam = GradCAM(model=model_c, target_layers=target_layer)
             
-#         img_idx = round(df[df['filename'] == f'{filename}.jpg']['score'].tolist()[0]) - 1
-#         target = [ClassifierOutputTarget(img_idx)]
+        img_idx = round(df[df['filename'] == f'{filename}.jpg']['score'].tolist()[0]) - 1
+        target = [ClassifierOutputTarget(img_idx)]
         
-#         # 获得热力图
-#         grayscale_cam = cam(input_tensor=input_tensor, targets=target)
+        # 获得热力图
+        grayscale_cam = cam(input_tensor=input_tensor, targets=target)
         
-#         # 在原图上绘制热力图并保存
-#         grayscale_cam = grayscale_cam[0, :]
-#         visualization = Image.fromarray(show_cam_on_image(input_array, grayscale_cam, use_rgb=True))
-#         visualization.save(os.path.join(res_dir, save_name, f"{filename}_gradcam.png"))
+        # 在原图上绘制热力图并保存
+        grayscale_cam = grayscale_cam[0, :]
+        visualization = Image.fromarray(show_cam_on_image(input_array, grayscale_cam, use_rgb=True))
+        visualization.save(os.path.join(res_dir, save_name, f"{filename}_gradcam.png"))
  
 def test(model, test_dataloader, log=None):
     model.eval()
