@@ -1,3 +1,8 @@
+'''
+损失函数设计
+为分类损失和回归损失的加权和
+'''
+
 import torch.nn as nn
 
 class CRLoss(nn.Module):

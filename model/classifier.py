@@ -1,3 +1,7 @@
+'''
+分类模型
+'''
+
 import torch.nn as nn
 
 class Classifier(nn.Module):

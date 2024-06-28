@@ -1,3 +1,8 @@
+'''
+美貌评估模型
+resnet18+分类和回归双分支结构
+'''
+
 import torch.nn as nn
 from torchvision import models
 

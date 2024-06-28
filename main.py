@@ -25,6 +25,9 @@ from loss.crloss import CRLoss
 from utils import load_image
 
 def load_data(dataset_name, mode, person=None):
+    '''
+    根据数据集名称、使用模式加载数据
+    '''
     transform = None
     shuffle = True
     drop_last = True
@@ -60,6 +63,9 @@ def load_data(dataset_name, mode, person=None):
     return dataloader
 
 def load_and_split_data(dataset_name, person=None):
+    '''
+    根据数据集名称，将数据集划分为训练集和验证集并加载
+    '''
     mode = "train"
     train_transform = transforms.Compose([
         transforms.Resize(224),
@@ -125,6 +131,9 @@ def load_and_split_data(dataset_name, person=None):
 #                         break
 
 def explain(model, dataset_name, save_name, person=None):
+    '''
+    运用grad-cam对美貌评估模型提取的特征进行可视化
+    '''
     model.eval()
     
     if not os.path.exists(os.path.join(res_dir, save_name)):
@@ -164,12 +173,16 @@ def explain(model, dataset_name, save_name, person=None):
         visualization.save(os.path.join(res_dir, save_name, f"{filename}_gradcam.png"))
  
 def test(model, test_dataloader, log=None):
+    '''
+    测试模型
+    '''
     model.eval()
     
     print("Start testing...")
     pred_score_list = []
     gt_score_list = []
     image_name_list = []
+    # 得到模型在测试集上的结果
     for data in test_dataloader:
         images, scores, _, names = data['image'], data['score'], data['class'], data['filename']
         images = images.to(device)
@@ -180,6 +193,7 @@ def test(model, test_dataloader, log=None):
         gt_score_list += scores.to('cpu').detach().numpy().tolist()
         image_name_list += names
     
+    # 计算各个评价指标并打印
     mae = round(mean_absolute_error(np.array(gt_score_list), np.array(pred_score_list).ravel()), 4)
     rmse = round(np.math.sqrt(mean_squared_error(np.array(gt_score_list), np.array(pred_score_list).ravel())), 4)
     pc = round(np.corrcoef(np.array(gt_score_list), np.array(pred_score_list).ravel())[0, 1], 4)
@@ -187,6 +201,7 @@ def test(model, test_dataloader, log=None):
     print('===============The Root Mean Square Error is {0}===================='.format(rmse))
     print('===============The Pearson Correlation is {0}===================='.format(pc))
     
+    # 记录每张图片的测试结果和总体的评价指标
     if log is not None:
         if not os.path.exists(os.path.join(res_dir, log)):
             os.makedirs(os.path.join(res_dir, log))
@@ -202,12 +217,16 @@ def test(model, test_dataloader, log=None):
     return mae
     
 def train(model, train_dataloader, val_dataloader, num_epochs=25, save_name="model", weight_classifier=0.4, weight_regressor=0.6):
+    '''
+    训练模型
+    '''
     cirterion = CRLoss(weight_classifier, weight_regressor)
     optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9, weight_decay=1e-4)
     scheduler = lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
     min_mae = 0
     recorded_mae = False
     
+    # 在训练集上进行训练
     print("Start training...")
     for epoch in range(num_epochs):
         model.train()
@@ -234,9 +253,11 @@ def train(model, train_dataloader, val_dataloader, num_epochs=25, save_name="mod
         mean_loss_train = sum(loss_list) / len(loss_list)
         wandb.log({"train loss": sum(loss_list) / len(loss_list)})
         print(f"Train loss: {mean_loss_train:.4f}")
+        # 在验证集上测试目前训练的结果
         mae_val = test(model, val_dataloader)
         wandb.log({"val mae": mae_val})
         
+        # 保存在验证集上效果最好的模型
         if not os.path.exists(os.path.join(res_dir, "models")):
             os.makedirs(os.path.join(res_dir, "models"))
         if not recorded_mae:
@@ -267,6 +288,7 @@ if __name__ == "__main__":
 
     options = parser.parse_args()
     
+    # 创建和加载模型
     model = FBP()
     if options.load_from:
         model.load_state_dict(torch.load(os.path.join(res_dir, "models", f"{options.load_from}.pt")))
@@ -274,11 +296,13 @@ if __name__ == "__main__":
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     
+    # 是否使用特定用户的数据
     if options.maml:
         person = options.person
     else:
         person = None
     
+    # 训练
     if options.train:
         wandb.init(project="cv_project_fbp", entity="yyxxyy574", name=options.save_name)
         if options.maml:
@@ -288,9 +312,11 @@ if __name__ == "__main__":
             val_dataloader = load_data(options.dataset, mode="test", person=person)
         train(model, train_dataloader, val_dataloader, save_name=options.save_name, weight_classifier=options.weight_classifier, weight_regressor=options.weight_regressor)
         
+    # 测试
     if options.test:
         test_dataloader = load_data(options.dataset, mode="test", person=person)
         test(model, test_dataloader, log=options.save_name)
         
+    # 解释
     if options.explain:
         explain(model, options.dataset, save_name=options.save_name, person=person)
